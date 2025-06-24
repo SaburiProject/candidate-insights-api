@@ -1,0 +1,203 @@
+const TRANSCRIBE_API_URL = "https://endpoint";
+const TRANSCRIPT_FOLDER_ID = "********************"; // 🔁 Replace with your transcript folder ID
+
+function transcribeAudioAndSaveToDoc(row) {
+  const sheet = SpreadsheetApp.getActiveSpreadsheet().getActiveSheet();
+  const fileId = sheet.getRange(row, 3).getValue(); // Column C - Audio File Link
+  const candidateName = sheet.getRange(row, 1).getValue(); // Column A - Candidate Name
+
+  if (!fileId) {
+    sheet.getRange(row, 7).setValue("❌ Missing audio file ID");
+    return;
+  }
+
+  const payload = {
+    file_id: extractFileId(fileId)
+  };
+
+  try {
+    const response = UrlFetchApp.fetch(TRANSCRIBE_API_URL, {
+      method: "post",
+      contentType: "application/json",
+      payload: JSON.stringify(payload),
+      muteHttpExceptions: true
+    });
+
+    const result = JSON.parse(response.getContentText());
+
+    if (response.getResponseCode() === 200 && result.transcript) {
+      // ✅ Create Google Doc with just candidate's name
+      const folder = DriveApp.getFolderById(TRANSCRIPT_FOLDER_ID);
+      const docName = candidateName || "Unnamed Candidate"; // fallback name if blank
+      const doc = DocumentApp.create(docName);
+      doc.getBody().setText(result.transcript);
+      doc.saveAndClose();
+
+      // ✅ Move Doc to target folder
+      const docFile = DriveApp.getFileById(doc.getId());
+      folder.addFile(docFile);
+      DriveApp.getRootFolder().removeFile(docFile); // optional cleanup
+
+      // ✅ Save Doc link and status
+      sheet.getRange(row, 4).setValue(doc.getUrl()); // Column D
+      sheet.getRange(row, 7).setValue("✅ Transcript Ready"); // Column G
+
+// ✅ Immediately trigger report if prompt is selected and report not generated
+const promptSelected = sheet.getRange(row, 5).getValue(); // E - Prompt
+const reportDoc = sheet.getRange(row, 6).getValue();       // F - Report
+
+if (promptSelected && !reportDoc) {
+  generateReportAndSaveToDoc(row);
+}
+
+    } else {
+      sheet.getRange(row, 7).setValue("❌ API Error: " + result.error);
+    }
+
+  } catch (error) {
+    sheet.getRange(row, 7).setValue("❌ Script Error: " + error.message);
+  }
+}
+
+// ✅ Extracts the actual file ID from a shared Google Drive link
+function extractFileId(link) {
+  const match = link.match(/[-\w]{25,}/);
+  return match ? match[0] : link;
+}
+
+// ✅ Adds dropdown list of prompt file names in Column E (E2:E100)
+function setDropdownWithPromptFiles() {
+  const folderId = "1uMmYZPd61eipffE4sNlQhCCvEh1oqxIi"; // 🔁 Your prompt folder ID
+  const folder = DriveApp.getFolderById(folderId);
+  const files = folder.getFiles();
+
+  const promptNames = [];
+  while (files.hasNext()) {
+    const file = files.next();
+    promptNames.push(file.getName());
+  }
+
+  const sheet = SpreadsheetApp.getActiveSpreadsheet().getActiveSheet();
+  const range = sheet.getRange("E2:E100");
+
+  const rule = SpreadsheetApp.newDataValidation()
+    .requireValueInList(promptNames, true)
+    .setAllowInvalid(false)
+    .build();
+
+  range.setDataValidation(rule);
+}
+
+// ✅ Gets prompt content from selected Doc file by name
+function getPromptTextByFileName(promptFileName, folderId) {
+  const folder = DriveApp.getFolderById(folderId);
+  const files = folder.getFilesByName(promptFileName);
+
+  if (!files.hasNext()) throw new Error("Prompt file not found: " + promptFileName);
+
+  const doc = DocumentApp.openById(files.next().getId());
+  return doc.getBody().getText();
+}
+function testTranscriptionRow2() {
+  transcribeAudioAndSaveToDoc(2); // Run it only for row 2 (Saburi)
+}
+const REPORT_API_URL = "https://candidate-insights-965886016241.asia-south1.run.app/generate-report";
+const REPORT_FOLDER_ID = "14cpKbnLqxOrm14PE_3ZJvQnPbYiGvYFk"; // 📁 Final report folder
+const PROMPT_FOLDER_ID = "1uMmYZPd61eipffE4sNlQhCCvEh1oqxIi"; // 📁 Prompt folder with Google Docs
+
+function generateReportAndSaveToDoc(row) {
+  const sheet = SpreadsheetApp.getActiveSpreadsheet().getActiveSheet();
+  const candidateName = sheet.getRange(row, 1).getValue(); // A - Candidate Name
+  const transcriptUrl = sheet.getRange(row, 4).getValue(); // D - Transcript Doc Link
+  const promptName = sheet.getRange(row, 5).getValue();    // E - Selected Prompt Name
+
+  if (!transcriptUrl || !promptName) {
+    sheet.getRange(row, 7).setValue("❌ Missing transcript or prompt");
+    return;
+  }
+
+  try {
+    // 🔁 Load transcript content from Google Doc
+    const transcriptFileId = extractFileId(transcriptUrl);
+    const transcriptDoc = DocumentApp.openById(transcriptFileId);
+    const transcriptText = transcriptDoc.getBody().getText();
+
+    // 🔁 Load prompt text
+    const promptText = getPromptTextByFileName(promptName, PROMPT_FOLDER_ID);
+
+    // 🔁 Call the report API
+    const payload = {
+      prompt: promptText,
+      transcript: transcriptText
+    };
+
+    const response = UrlFetchApp.fetch(REPORT_API_URL, {
+      method: "post",
+      contentType: "application/json",
+      payload: JSON.stringify(payload),
+      muteHttpExceptions: true
+    });
+
+    const result = JSON.parse(response.getContentText());
+
+    if (response.getResponseCode() === 200 && result.report) {
+      // ✅ Create report doc
+      const folder = DriveApp.getFolderById(REPORT_FOLDER_ID);
+      const docName = `${candidateName || "Unnamed"} - ${promptName}`;
+
+      const doc = DocumentApp.create(docName);
+      doc.getBody().setText(result.report);
+      doc.saveAndClose();
+
+      const docFile = DriveApp.getFileById(doc.getId());
+      folder.addFile(docFile);
+      DriveApp.getRootFolder().removeFile(docFile);
+
+      // ✅ Save Doc URL and update status
+      sheet.getRange(row, 6).setValue(doc.getUrl()); // F - Report link
+      sheet.getRange(row, 7).setValue("✅ Report Ready"); // G - Status
+    } else {
+      sheet.getRange(row, 7).setValue("❌ API Error: " + result.error);
+    }
+
+  } catch (error) {
+    sheet.getRange(row, 7).setValue("❌ Script Error: " + error.message);
+  }
+}
+function testReportRow2() {
+  generateReportAndSaveToDoc(2);
+}
+function onEdit(e) {
+  const sheet = e.source.getActiveSheet();
+  const row = e.range.getRow();
+  const col = e.range.getColumn();
+
+  // Skip header or non-editable areas
+  if (row === 1) return;
+
+  const name = sheet.getRange(row, 1).getValue(); // A
+  const jd = sheet.getRange(row, 2).getValue();   // B
+  const audioLink = sheet.getRange(row, 3).getValue(); // C
+  const transcriptDoc = sheet.getRange(row, 4).getValue(); // D
+  const promptSelected = sheet.getRange(row, 5).getValue(); // E
+  const reportDoc = sheet.getRange(row, 6).getValue(); // F
+  const status = sheet.getRange(row, 7).getValue(); // G
+
+  // 🔁 Auto Transcribe when A, B, C are filled but D is empty
+  if (name && jd && audioLink && !transcriptDoc) {
+    transcribeAudioAndSaveToDoc(row);
+    return;
+  }
+
+  // 🔁 Auto Report when E is selected and F is empty
+  if (promptSelected && transcriptDoc && !reportDoc) {
+    generateReportAndSaveToDoc(row);
+    return;
+  }
+
+  // ✅ NEW: Trigger report if column G is edited to “✅ Transcript Ready”
+  if (col === 7 && status === "✅ Transcript Ready" && promptSelected && !reportDoc) {
+    generateReportAndSaveToDoc(row);
+    return;
+  }
+}
